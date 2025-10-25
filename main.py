@@ -4,6 +4,7 @@ import websockets
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 
+
 @register("astrbot_plugin_mcqqsync", "PISOFT", "接收MCQQSync消息并同步到群聊", "1.0.0")
 class MCQQSync(Star):
     def __init__(self, context: Context, config):
@@ -56,7 +57,11 @@ class MCQQSync(Star):
         if not target_group:
             logger.warning("未配置 group_id，跳过发送。")
             return
-        await self.context.send_group_message(target_group, text)
+        try:
+            await self.context.bot.send_group_message(target_group, text)
+            logger.info(f"已发送到群 {target_group}: {text}")
+        except Exception as e:
+            logger.error(f"发送群消息失败: {e}")
 
     async def terminate(self):
         logger.info("MCQQSync 已停止。")
