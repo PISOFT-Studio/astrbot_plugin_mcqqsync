@@ -1,271 +1,64 @@
 import asyncio
 import json
-import struct
-import os
-import re
-from astrbot.api.event import filter, AstrMessageEvent
+import websockets
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
-from astrbot.api.star import StarTools
-from astrbot.api import AstrBotConfig  # 配置管理
 
-
-class AsyncRcon:  # 异步RCON类
-    def __init__(self, host: str, port: int, password: str):
-        self.host = host
-        self.port = port
-        self.password = password
-        self.reader = None
-        self.writer = None
-
-    async def connect(self):
-        self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
-        await self._send_packet(0, 3, self.password)  # 登录
-        await self._recv_packet()
-
-    async def send_cmd(self, command: str) -> str:
-        await self._send_packet(1, 2, command)
-        _, _, body = await self._recv_packet()
-        return body
-
-    async def close(self):
-        if self.writer:
-            self.writer.close()
-            await self.writer.wait_closed()
-
-    async def _send_packet(self, req_id: int, ptype: int, payload: str):
-        data = struct.pack("<ii", req_id, ptype) + payload.encode() + b"\x00\x00"
-        length = struct.pack("<i", len(data))
-        self.writer.write(length + data)
-        await self.writer.drain()
-
-    async def _recv_packet(self):
-        length_bytes = await self.reader.readexactly(4)
-        length = struct.unpack("<i", length_bytes)[0]
-        data = await self.reader.readexactly(length)
-        req_id, ptype = struct.unpack("<ii", data[:8])
-        body = data[8:].rstrip(b"\x00").decode(errors="ignore")
-        return req_id, ptype, body
-
-
-def strip_mc_color(text: str) -> str:
-    return re.sub(r"§.", "", text)
-
-
-async def rcon_command(
-    host: str, port: int, password: str, command: str
-) -> str:  # 执行rcon命令
-    """统一执行任意 RCON 命令"""
-    rcon = AsyncRcon(host, port, password)
-    await rcon.connect()
-    try:
-        return await rcon.send_cmd(command)
-    finally:
-        await rcon.close()
-
-
-@register(
-    "astrbot_plugin_mcman", "卡带酱", "一个基于RCON协议的MC服务器管理器插件", "1.1.0"
-)
-class MyPlugin(Star):
-    def __init__(self, context: Context, config: AstrBotConfig):
+@register("astrbot_plugin_mcqqsync", "PISOFT", "接收MCQQSync消息并同步到群聊", "1.0.0")
+class MCQQSync(Star):
+    def __init__(self, context: Context, config):
         super().__init__(context)
         self.config = config
-        self.whitelist_command = self.config.get("whitelist_command", "whitelist")
-        self.admin_qqs = set(self.config.get("admin_qqs", []))
-        self.rcon_host = self.config.get("rcon_host")
-        self.rcon_port = self.config.get("rcon_port")
-        self.rcon_password = self.config.get("rcon_password")
-        # 申请白名单功能
-        self.enable_apply_whitelist = self.config.get("enable_apply_whitelist", False)
-        self.plugin_data_dir = StarTools.get_data_dir("astrbot_plugin_mcman")
-        self.apply_file = os.path.join(self.plugin_data_dir, "apply_whitelist.json")
-        self.apply_data = self._load_apply_data()
-
-    def _load_apply_data(self):
-        if os.path.exists(self.apply_file):
-            with open(self.apply_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        return {}
-
-    def _save_apply_data(self):
-        with open(self.apply_file, "w", encoding="utf-8") as f:
-            json.dump(self.apply_data, f, ensure_ascii=False, indent=2)
+        self.ws_host = self.config.get("ws_host", "0.0.0.0")
+        self.ws_port = self.config.get("ws_port", 52778)
+        self.server_task = None
 
     async def initialize(self):
-        logger.info("mcman plugin by kdj")
+        logger.info(f"MCQQSync 启动 WebSocket 监听 {self.ws_host}:{self.ws_port}")
+        self.server_task = asyncio.create_task(self.start_ws_server())
 
-    def is_admin(self, qqid: str) -> bool:
-        return qqid in self.admin_qqs
+    async def start_ws_server(self):
+        async def handler(websocket):
+            logger.info("✅ 已连接来自 Minecraft 的 WebSocket")
+            async for message in websocket:
+                try:
+                    data = json.loads(message)
+                    event_type = data.get("type")
 
-    async def execute_and_reply(self, event: AstrMessageEvent, command: str, desc: str):
-        """通用执行 + 回复逻辑"""
-        user_name = event.get_sender_name()
-        sender_qq = str(event.get_sender_id())
-        named = f"{user_name}({sender_qq})"
+                    if event_type == "join":
+                        player = data.get("player")
+                        msg = f"🎮 玩家 {player} 加入了服务器！"
+                        await self.send_to_group(msg)
 
-        try:
-            resp = await rcon_command(
-                self.rcon_host, self.rcon_port, self.rcon_password, command
-            )
-            cresp = strip_mc_color(resp)
-            logger.info(f"RCON 执行结果: {resp}")
-            yield event.plain_result(
-                f"你好, {named}, 已尝试执行 `{command}` ({desc})\n\n服务器返回：\n{cresp}"
-            )
-        except Exception as e:
-            logger.error(f"RCON 执行失败: {e}")
-            yield event.plain_result(f"你好, {named}, 操作失败：{e}")
+                    elif event_type == "quit":
+                        player = data.get("player")
+                        msg = f"🚪 玩家 {player} 离开了服务器。"
+                        await self.send_to_group(msg)
 
-    @filter.command("mcwl", desc="MC 白名单管理", alias={"mcwhitelist"})
-    async def mcwl(self, event: AstrMessageEvent, o: str, mcname: str = ""):
-        if not self.is_admin(str(event.get_sender_id())):
-            yield event.plain_result("抱歉，你没有权限执行此操作。")
+                    elif event_type == "chat":
+                        player = data.get("player")
+                        text = data.get("message")
+                        msg = f"💬 {player}: {text}"
+                        await self.send_to_group(msg)
+
+                    else:
+                        logger.warning(f"未知消息类型: {data}")
+
+                except Exception as e:
+                    logger.error(f"WebSocket 消息解析错误: {e}")
+
+        async with websockets.serve(handler, self.ws_host, self.ws_port):
+            await asyncio.Future()  # 永不结束
+
+    async def send_to_group(self, text: str):
+        """发送到目标群聊"""
+        target_group = self.config.get("group_id")
+        if not target_group:
+            logger.warning("未配置 group_id，跳过发送。")
             return
-        command = f"{self.whitelist_command} {o} {mcname}".strip()
-        async for msg in self.execute_and_reply(event, command, "白名单管理"):
-            yield msg
-
-    @filter.command("mcban", desc="MC 黑名单添加")
-    async def mcban(self, event: AstrMessageEvent, mcname: str = "", reason: str = ""):
-        if not self.is_admin(str(event.get_sender_id())):
-            yield event.plain_result("抱歉，你没有权限执行此操作。")
-            return
-        command = f"ban {mcname} {reason}".strip()
-        async for msg in self.execute_and_reply(event, command, "黑名单添加"):
-            yield msg
-
-    @filter.command("mcpardon", desc="MC 黑名单移除", alias={"mcunban"})
-    async def mcpardon(self, event: AstrMessageEvent, mcname: str = ""):
-        if not self.is_admin(str(event.get_sender_id())):
-            yield event.plain_result("抱歉，你没有权限执行此操作。")
-            return
-        command = f"pardon {mcname}".strip()
-        async for msg in self.execute_and_reply(event, command, "黑名单移除"):
-            yield msg
-
-    @filter.command("mcbanlist", desc="MC 黑名单查看", alias={"mcbl"})
-    async def mcbl(self, event: AstrMessageEvent):
-        async for msg in self.execute_and_reply(event, "banlist", "查看黑名单"):
-            yield msg
-
-    @filter.command("mclist", desc="MC 查看在线玩家", alias={"mcl"})
-    async def mclist(self, event: AstrMessageEvent):
-        async for msg in self.execute_and_reply(event, "list", "查看在线玩家"):
-            yield msg
-
-    @filter.command("mckick", desc="MC 踢出指定玩家", alias={"mck"})
-    async def mckick(self, event: AstrMessageEvent, mcname: str = "", reason: str = ""):
-        if not self.is_admin(str(event.get_sender_id())):
-            yield event.plain_result("抱歉，你没有权限执行此操作。")
-            return
-        command = f"kick {mcname} {reason}".strip()
-        async for msg in self.execute_and_reply(event, command, "踢出玩家"):
-            yield msg
-
-    @filter.command("mctempban", desc="MC 临时黑名单", alias={"mctb"})
-    async def mctempban(
-        self,
-        event: AstrMessageEvent,
-        mcname: str = "",
-        time: str = "",
-        reason: str = "",
-    ):
-        if not self.is_admin(str(event.get_sender_id())):
-            yield event.plain_result("抱歉，你没有权限执行此操作。")
-            return
-        command = f"tempban {mcname} {time} {reason}".strip()
-        async for msg in self.execute_and_reply(event, command, "临时封禁"):
-            yield msg
-
-    @filter.command("mcsay", desc="MC 说话", alias={"mcs"})
-    async def mcsay(self, event: AstrMessageEvent, text: str = ""):
-        user_name = event.get_sender_name()
-        sender_qq = str(event.get_sender_id())
-        named = f"{user_name}({sender_qq})"
-
-        if not text:
-            yield event.plain_result(f"你好, {named}, 请输入信息!")
-            return
-
-        message = [
-            {"text": f"(QQ消息) ", "color": "aqua"},
-            {"text": f"<{named}>", "color": "green", "underlined": True},
-            {"text": " 说: ", "color": "white"},
-            {"text": text, "color": "yellow"},
-        ]
-        command = f"tellraw @a {json.dumps(message, ensure_ascii=False)}"
-        async for msg in self.execute_and_reply(event, command, "玩家发言"):
-            yield msg
-
-    @filter.command("mcbroadcast", desc="MC 广播消息", alias={"mcb", "mcbc"})
-    async def mcbroadcast(self, event: AstrMessageEvent, text: str = ""):
-        user_name = event.get_sender_name()
-        sender_qq = str(event.get_sender_id())
-        named = f"{user_name}({sender_qq})"
-        if not self.is_admin(str(event.get_sender_id())):
-            yield event.plain_result("抱歉，你没有权限执行此操作。")
-            return
-        if not text:
-            yield event.plain_result(f"你好, {named}, 请输入广播信息!")
-            return
-
-        message = [
-            {"text": f"<管理员广播消息>", "color": "green", "underlined": True},
-            {"text": " ", "color": "white", "underlined": False},
-            {"text": text, "color": "yellow", "underlined": False},
-        ]
-        command = f"tellraw @a {json.dumps(message, ensure_ascii=False)}"
-        async for msg in self.execute_and_reply(event, command, "广播消息"):
-            yield msg
-
-    @filter.command("wantwl", desc="申请MC白名单")
-    async def wantwl(self, event: AstrMessageEvent, mcname: str = ""):
-        if not self.enable_apply_whitelist:
-            yield event.plain_result("抱歉，白名单申请功能未开启。")
-            return
-        if not mcname:
-            yield event.plain_result("请输入要绑定的MC用户名。")
-            return
-
-        qqid = str(event.get_sender_id())
-        if qqid in self.apply_data:
-            yield event.plain_result(
-                f"你已经绑定过MC账号 `{self.apply_data[qqid]}`，不能重复申请。"
-            )
-            return
-
-        # 调用RCON执行
-        command = f"{self.whitelist_command} add {mcname}"
-        try:
-            resp = await rcon_command(
-                self.rcon_host, self.rcon_port, self.rcon_password, command
-            )
-            self.apply_data[qqid] = mcname
-            self._save_apply_data()
-            yield event.plain_result(
-                f"成功为你绑定MC账号 `{mcname}` 并加入白名单！\n服务器返回：{strip_mc_color(resp)}"
-            )
-        except Exception as e:
-            yield event.plain_result(f"申请失败：{e}")
-
-    @filter.command("mckill", desc="MC kill人")
-    async def mckill(self, event: AstrMessageEvent, mcname: str = ""):
-        if not self.is_admin(str(event.get_sender_id())):
-            yield event.plain_result("抱歉，你没有权限执行此操作。")
-            return
-        command = f"kill {mcname}".strip()
-        async for msg in self.execute_and_reply(event, command, "kill"):
-            yield msg
-
-    @filter.command("mcplugins", desc="MC 插件列表")
-    async def mcplugins(
-        self,
-        event: AstrMessageEvent,
-    ):
-        command = f"plugins".strip()
-        async for msg in self.execute_and_reply(event, command, "插件列表"):
-            yield msg
+        await self.context.send_group_message(target_group, text)
 
     async def terminate(self):
-        logger.info("mcman plugin stopped")
+        logger.info("MCQQSync 已停止。")
+        if self.server_task:
+            self.server_task.cancel()
