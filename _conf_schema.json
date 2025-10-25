@@ -10,10 +10,16 @@
     "type": "int",
     "default": 52778
   },
-"group_id": {
+  "group_id": {
     "description": "群号",
     "type": "string",
-    "default": "123456789",
-    "hint": "例如 123456789"
+    "default": "default:GroupMessage:123456789",
+    "hint": "是/sid获取的适配器名，别弄错了"
+  },
+  "provider_id": {
+    "description": "模型提供商ID",
+    "type": "string",
+    "default": "openai",
+    "hint": "没啥可说的"
   }
 }
