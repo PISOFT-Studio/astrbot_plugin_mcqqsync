@@ -1,20 +1,23 @@
 {
   "ws_host": {
-    "description": "Websocket 地址或域名",
+    "description": "Websocket 监听地址",
     "type": "string",
     "default": "127.0.0.1",
-    "hint": "例如 127.0.0.1 或者 example.com"
+    "hint": "例如 127.0.0.1 或者 你服务器公网ip"
   },
   "ws_port": {
-    "description": "Websocket 端口号",
+    "description": "Websocket 监听端口号",
     "type": "int",
     "default": 52778
   },
-  "group_id": {
-    "description": "群号",
-    "type": "string",
-    "default": "default:GroupMessage:123456789",
-    "hint": "是/sid获取的适配器名，别弄错了"
+  "group_ids": {
+    "description": "群id",
+    "type": "list",
+    "hint": "/sid获取的适配器名",
+    "items": {
+      "type": "string"
+    },
+    "default": []
   },
   "provider_id": {
     "description": "模型提供商ID",
