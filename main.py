@@ -20,7 +20,7 @@ class MCQQSync(Star):
         self.valid_connections = set()  # 跟踪有效 WS 连接（用 id）
 
     async def initialize(self):
-        if not self.group_id:
+        if not self.group_ids:
             logger.warning("未配置 group_id，插件将无法发送消息。")
         if not self.expected_token:
             logger.warning("未配置 expected_token，安全验证将禁用。")
