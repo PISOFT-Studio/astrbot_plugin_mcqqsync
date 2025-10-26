@@ -29,6 +29,6 @@
     "description": "插件端的token",
     "type": "string",
     "default": "token",
-    "hint": "mc服务器装上插件会自动提示一个token，在控制台执行/mcqqsync token get也可以获取"
+    "hint": "mc服务器装上插件会在控制台输出一个token，在控制台执行/mcqqsync token get也可以获取"
   }
 }

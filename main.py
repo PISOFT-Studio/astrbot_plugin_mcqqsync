@@ -14,7 +14,7 @@ class MCQQSync(Star):
         self.ws_host = self.config.get("ws_host", "0.0.0.0")
         self.ws_port = self.config.get("ws_port", 52778)
         self.provider_id = self.config.get("provider_id", "")
-        self.group_id = self.config.get("group_id", "")  # 确保读取
+        self.group_ids = set(self.config.get("group_ids", []))
         self.expected_token = self.config.get("expected_token", "")  # 从 config 读取 Token（手动配置）
         self.server_task = None
         self.valid_connections = set()  # 跟踪有效 WS 连接（用 id）
@@ -141,19 +141,20 @@ class MCQQSync(Star):
             return f"💬 {player}: {msg_text}"
 
     async def send_to_group(self, text: str):
-        if not self.group_id:
+        if not self.group_ids:
             logger.warning("未配置 group_id，跳过发送。")
             return
+        for group_id in self.group_ids:
+            try:
+                chain = MessageChain([Plain(text=text)])  # 修复：使用 Plain
+                success = await self.context.send_message(group_id, chain)  # 使用 config group_id
+                if success:
+                    logger.info(f"✅ 已发送到群 {group_id}: {text}")
+                else:
+                    logger.error(f"❌ 发送群消息失败: {group_id}")
+            except Exception as e:
+                logger.error(f"发送消息时出错: {e}")
 
-        try:
-            chain = MessageChain([Plain(text=text)])  # 修复：使用 Plain
-            success = await self.context.send_message(self.group_id, chain)  # 使用 config group_id
-            if success:
-                logger.info(f"✅ 已发送到群 {self.group_id}: {text}")
-            else:
-                logger.error(f"❌ 发送群消息失败: {self.group_id}")
-        except Exception as e:
-            logger.error(f"发送消息时出错: {e}")
 
     async def terminate(self):
         logger.info("MCQQSync 已停止。")
