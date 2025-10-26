@@ -6,7 +6,7 @@ from astrbot.api import logger
 from astrbot.api.event import MessageChain, AstrMessageEvent
 from astrbot.api.message_components import Plain
 
-@register("astrbot_plugin_mcqqsync", "卡带酱", "接收MCQQSync消息并同步到群聊", "1.0.0")
+@register("astrbot_plugin_mcqqsync", "卡带酱", "接收MCQQSync消息并同步到群聊", "1.0.1")
 class MCQQSync(Star):
     def __init__(self, context: Context, config):
         super().__init__(context)
